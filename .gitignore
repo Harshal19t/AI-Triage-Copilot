@@ -1,0 +1,18 @@
+# Environment
+.venv/
+.env
+
+#file
+.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Derived data -- rebuild with `python src/build_index.py`
+data/chroma/
+data/test_chroma*/
+
+# data/triage.db is intentionally NOT ignored -- it's committed as the
+# project's source-of-truth corpus, refreshed nightly by the Action.
