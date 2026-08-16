@@ -10,6 +10,9 @@ import sqlite3
 from datetime import datetime, timezone
 
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()  # reads .env into the environment -- works the same on Windows, Mac, Linux
 
 GITHUB_API = "https://api.github.com"
 RAW_BASE = "https://raw.githubusercontent.com"

@@ -27,6 +27,9 @@ import time
 from datetime import datetime, timezone
 
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()  # reads .env into the environment -- works the same on Windows, Mac, Linux
 
 GRAPHQL_URL = "https://api.github.com/graphql"
 
