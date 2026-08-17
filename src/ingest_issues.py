@@ -14,6 +14,14 @@ endpoint, for two reasons that matter once a repo has more than ~1000 issues:
 Requires GITHUB_TOKEN -- unlike REST's 60 req/hour unauthenticated quota,
 GraphQL has effectively no unauthenticated quota at all.
 
+Resumable: progress is checkpointed to <db>.cursor.json after every page.
+If a run is interrupted (including by GitHub's secondary rate limiting),
+rerunning the exact same command picks up where it left off instead of
+starting over. The checkpoint is cleared automatically once a full pull
+completes. (Checkpointing is skipped when --max-pages is set, since that
+flag is meant for quick smoke tests, not partial progress toward a full
+pull.)
+
 Usage:
     python src/ingest_issues.py --repo Textualize/textual --state all
 """
@@ -99,11 +107,43 @@ def require_token() -> str:
     return token
 
 
-def fetch_issues(repo: str, token: str, max_pages: int | None = None):
-    """Yield raw GraphQL issue nodes, walking pages via cursor (not offset)."""
+def checkpoint_path(db_path: str) -> str:
+    return f"{db_path}.cursor.json"
+
+
+def load_checkpoint(db_path: str, repo: str) -> str | None:
+    path = checkpoint_path(db_path)
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        state = json.load(f)
+    if state.get("repo") != repo:
+        return None  # different repo than last time -- don't reuse a stale cursor
+    return state.get("cursor")
+
+
+def save_checkpoint(db_path: str, repo: str, cursor: str) -> None:
+    with open(checkpoint_path(db_path), "w") as f:
+        json.dump({"repo": repo, "cursor": cursor}, f)
+
+
+def clear_checkpoint(db_path: str) -> None:
+    path = checkpoint_path(db_path)
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def fetch_issue_pages(repo: str, token: str, start_cursor: str | None = None, max_pages: int | None = None):
+    """Yield (nodes, end_cursor, has_next_page) once per page.
+
+    Handles both GitHub's primary rate limit (hourly quota exhausted) and
+    secondary rate limit (too many requests too quickly -- the more likely
+    cause on Actions runners, which share heavily-used IP ranges) by backing
+    off and retrying rather than crashing.
+    """
     owner, name = repo.split("/", 1)
     headers = {"Authorization": f"Bearer {token}", "User-Agent": "oss-triage-copilot"}
-    cursor = None
+    cursor = start_cursor
     page = 0
 
     while True:
@@ -113,10 +153,33 @@ def fetch_issues(repo: str, token: str, max_pages: int | None = None):
             json={"query": ISSUES_QUERY, "variables": {"owner": owner, "name": name, "cursor": cursor}},
             timeout=30,
         )
+
+        if resp.status_code in (403, 429):
+            retry_after = resp.headers.get("Retry-After")
+            remaining = resp.headers.get("X-RateLimit-Remaining")
+            reset = resp.headers.get("X-RateLimit-Reset")
+
+            if retry_after:
+                wait = int(retry_after) + 2
+                print(f"Secondary rate limit hit (status {resp.status_code}). Body: {resp.text[:300]}", file=sys.stderr)
+                print(f"Waiting {wait}s (from Retry-After header) before retrying...", file=sys.stderr)
+                time.sleep(wait)
+                continue
+
+            if remaining == "0" and reset:
+                wait = max(int(reset) - int(time.time()), 0) + 5
+                print(f"Rate limit exhausted. Waiting {wait}s until reset...", file=sys.stderr)
+                time.sleep(wait)
+                continue
+
+            # Not a pattern we recognize -- surface the real body instead of a bare traceback
+            print(f"Unexpected {resp.status_code} with no Retry-After/reset header. Body: {resp.text[:500]}", file=sys.stderr)
+
         if resp.status_code == 502:
             print("GitHub returned 502 (transient), retrying in 5s...", file=sys.stderr)
             time.sleep(5)
             continue
+
         resp.raise_for_status()
 
         payload = resp.json()
@@ -124,18 +187,16 @@ def fetch_issues(repo: str, token: str, max_pages: int | None = None):
             raise RuntimeError(f"GraphQL error: {payload['errors']}")
 
         issues_conn = payload["data"]["repository"]["issues"]
-        for node in issues_conn["nodes"]:
-            yield node
-
+        page_info = issues_conn["pageInfo"]
         page += 1
+        yield issues_conn["nodes"], page_info["endCursor"], page_info["hasNextPage"]
+
         if max_pages and page >= max_pages:
             break
-
-        page_info = issues_conn["pageInfo"]
         if not page_info["hasNextPage"]:
             break
         cursor = page_info["endCursor"]
-        time.sleep(0.2)  # be polite even though the quota is generous
+        time.sleep(0.5)  # a little more conservative than before -- reduces secondary rate-limit risk
 
 
 def upsert_issue(conn: sqlite3.Connection, node: dict, state_filter: str) -> bool:
@@ -174,21 +235,41 @@ def main():
 
     token = require_token()
     conn = init_db(args.db)
+    use_checkpoint = args.max_pages is None
+
+    resume_cursor = load_checkpoint(args.db, args.repo) if use_checkpoint else None
+    if resume_cursor:
+        print("Found a checkpoint from an interrupted run -- resuming from there instead of page 1.", file=sys.stderr)
+
     ingested, filtered_out = 0, 0
+    final_has_next = True
 
-    for node in fetch_issues(args.repo, token, max_pages=args.max_pages):
-        if upsert_issue(conn, node, args.state):
-            ingested += 1
-        else:
-            filtered_out += 1
-        if ingested and ingested % 100 == 0:
-            conn.commit()
-            print(f"...{ingested} issues so far")
+    for nodes, end_cursor, has_next in fetch_issue_pages(args.repo, token, start_cursor=resume_cursor, max_pages=args.max_pages):
+        for node in nodes:
+            if upsert_issue(conn, node, args.state):
+                ingested += 1
+            else:
+                filtered_out += 1
+        conn.commit()
 
-    conn.commit()
+        if use_checkpoint:
+            save_checkpoint(args.db, args.repo, end_cursor)
+
+        print(f"...{ingested} issues so far" + (" (checkpoint saved)" if use_checkpoint else ""))
+        final_has_next = has_next
+        if not has_next:
+            break
+
     conn.close()
     suffix = f", filtered out {filtered_out} by state" if filtered_out else ""
-    print(f"Done. Ingested {ingested} issues{suffix}.")
+
+    if use_checkpoint and not final_has_next:
+        clear_checkpoint(args.db)
+        print(f"Done. Ingested {ingested} issues{suffix}. Full pull complete, checkpoint cleared.")
+    elif use_checkpoint:
+        print(f"Stopped partway through (rerun the same command to resume). Ingested {ingested} issues{suffix} this run.")
+    else:
+        print(f"Done (smoke test, --max-pages set). Ingested {ingested} issues{suffix}.")
 
 
 if __name__ == "__main__":
