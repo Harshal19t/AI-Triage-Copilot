@@ -47,9 +47,13 @@ def load_docs(conn: sqlite3.Connection) -> list[dict]:
     return items
 
 
-def load_issues(conn: sqlite3.Connection, states=("closed",)) -> list[dict]:
-    """Only closed issues by default -- these are the ones with known resolutions,
-    which is what makes them useful as duplicate/similarity reference points."""
+def load_issues(conn: sqlite3.Connection, states=("open", "closed")) -> list[dict]:
+    """Both open and closed issues get indexed, for two different reasons:
+    open issues are what duplicate detection actually needs (catching "someone
+    already reported this and it's still open" is the highest-value case for a
+    triage bot), while closed issues are useful for citing how something
+    similar got resolved. The `state` metadata field lets the agent (step 4)
+    treat these two cases differently rather than blending them together."""
     placeholders = ",".join("?" for _ in states)
     rows = conn.execute(
         f"SELECT number, title, body, html_url, state FROM issues WHERE state IN ({placeholders})",
