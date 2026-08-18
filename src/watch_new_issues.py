@@ -25,6 +25,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -135,7 +136,7 @@ def main():
         conn.close()
         return
 
-    for node in new_issues:
+    for i, node in enumerate(new_issues):
         title, body = node.get("title") or "", node.get("body") or ""
         print(f"\n=== Triaging new issue #{node['number']}: {title} ===")
 
@@ -152,6 +153,9 @@ def main():
             print("POST_TO_GITHUB is set, but post_comment.py doesn't exist yet -- nothing was posted.")
         else:
             print("(shadow mode -- not posted)")
+
+        if i < len(new_issues) - 1:
+            time.sleep(13)  # ~5 req/min free tier -- pace proactively, don't just rely on retry-after-failure
 
     conn.close()
 

@@ -20,14 +20,17 @@ Usage:
 
 import argparse
 import os
+import re
 import sqlite3
 import sys
+import time
 from typing import Literal, Optional
 
 import chromadb
 from chromadb.utils import embedding_functions
 from dotenv import load_dotenv
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 from pydantic import BaseModel
 
@@ -179,6 +182,40 @@ def format_decision(decision: "TriageDecision", similar_issues: list[dict]) -> s
     return "\n".join(lines)
 
 
+def _extract_retry_seconds(error: genai_errors.ClientError, default: float = 65.0) -> float:
+    """Google's free-tier 429 spells out exactly how long to wait, e.g.
+    '...Please retry in 48.460395643s.' -- use that instead of guessing."""
+    match = re.search(r"retry in ([\d.]+)s", str(error.details))
+    if match:
+        return float(match.group(1)) + 2.0  # small buffer past the exact boundary
+    return default
+
+
+def call_gemini_with_retry(client, model: str, prompt: str, max_retries: int = 5):
+    """The free tier is capped at 5 requests/minute -- expect to hit this on
+    any batch of more than a handful of issues, not just as a rare edge case."""
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            return client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=TriageDecision,
+                ),
+            )
+        except genai_errors.ClientError as e:
+            if e.code != 429:
+                raise  # not a rate limit -- don't retry, surface it immediately
+            last_error = e
+            if attempt < max_retries:
+                wait = _extract_retry_seconds(e)
+                print(f"Gemini rate limit hit (attempt {attempt}/{max_retries}). Waiting {wait:.0f}s...", file=sys.stderr)
+                time.sleep(wait)
+    raise RuntimeError(f"Gemini rate limit persisted after {max_retries} attempts") from last_error
+
+
 def run_triage(
     title: str, body: str, chroma_dir: str, collection: str, model: str,
     api_key: str, exclude_number: Optional[int] = None,
@@ -195,14 +232,7 @@ def run_triage(
     prompt = build_prompt(title, body, similar_issues, doc_snippets)
 
     client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model=model,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=TriageDecision,
-        ),
-    )
+    response = call_gemini_with_retry(client, model, prompt)
     decision = TriageDecision.model_validate_json(response.text)
     return decision, similar_issues, doc_snippets
 
