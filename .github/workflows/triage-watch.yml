@@ -1,0 +1,36 @@
+name: Triage watch (shadow mode)
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # every 30 minutes -- Textual gets roughly 1-2 new issues/day,
+                              # so this leaves wide headroom before --lookback (20) could miss one
+  workflow_dispatch: {}       # trigger manually from the Actions tab to test without waiting
+
+permissions:
+  contents: write   # needed to commit the updated triaged_log table
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - name: Check for new issues and triage them (shadow mode -- logs only, never posts)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python src/watch_new_issues.py --repo Textualize/textual --db data/triage.db
+
+      - name: Commit updated triage log
+        run: |
+          git config user.name "triage-bot"
+          git config user.email "actions@github.com"
+          git add data/triage.db
+          git diff --cached --quiet || git commit -m "chore: triage new issues (shadow mode)"
+          git push
