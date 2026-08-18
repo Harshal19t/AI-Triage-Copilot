@@ -137,7 +137,7 @@ def main():
 
     with st.expander("All triaged issues (table)"):
         display_df = triaged_sorted[["number", "triaged_at", "priority", "duplicate_confidence"]].copy()
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.dataframe(display_df, width="stretch", hide_index=True)
 
     st.divider()
     st.caption(
