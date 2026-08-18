@@ -201,8 +201,19 @@ def _is_daily_quota_exhausted(error: genai_errors.ClientError) -> bool:
 
 
 def call_gemini_with_retry(client, model: str, prompt: str, max_retries: int = 5):
-    """The free tier has both a per-minute limit (worth retrying -- resets fast)
-    and a per-day limit (not worth retrying -- fails fast instead)."""
+    """Two genuinely different transient conditions land here, and they need
+    different handling:
+    - 429 per-minute quota: resets fast, worth retrying with the exact delay
+      Google's error message provides.
+    - 429 per-day quota: doesn't reset for ~24h, retrying within this run is
+      pure wasted time -- fail fast instead.
+    - 503 (ServerError, e.g. "high demand, try again later"): genuinely
+      transient server-side overload, not a quota issue at all -- worth
+      retrying with a plain backoff, since Google gives no exact delay hint
+      for this one the way it does for 429s.
+    Anything else (4xx auth/config errors, etc.) isn't retried -- it won't
+    resolve by waiting, so it's surfaced immediately instead of masked.
+    """
     last_error = None
     for attempt in range(1, max_retries + 1):
         try:
@@ -214,20 +225,26 @@ def call_gemini_with_retry(client, model: str, prompt: str, max_retries: int = 5
                     response_schema=TriageDecision,
                 ),
             )
-        except genai_errors.ClientError as e:
-            if e.code != 429:
-                raise  # not a rate limit -- don't retry, surface it immediately
-            if _is_daily_quota_exhausted(e):
-                raise RuntimeError(
-                    "Gemini daily free-tier quota exhausted (resets on Google's ~24h schedule, "
-                    "not something retrying within this run can fix)."
-                ) from e
+        except genai_errors.APIError as e:
+            if e.code == 429:
+                if _is_daily_quota_exhausted(e):
+                    raise RuntimeError(
+                        "Gemini daily free-tier quota exhausted (resets on Google's ~24h "
+                        "schedule, not something retrying within this run can fix)."
+                    ) from e
+                wait = _extract_retry_seconds(e)
+                kind = "per-minute rate limit"
+            elif e.code in (500, 503, 504):
+                wait = min(15 * attempt, 60)  # simple backoff -- Google gives no exact delay for this one
+                kind = "server overload (transient, per Google's own message)"
+            else:
+                raise  # not something retrying will fix -- surface it immediately
+
             last_error = e
             if attempt < max_retries:
-                wait = _extract_retry_seconds(e)
-                print(f"Gemini per-minute rate limit hit (attempt {attempt}/{max_retries}). Waiting {wait:.0f}s...", file=sys.stderr)
+                print(f"Gemini {kind} hit (attempt {attempt}/{max_retries}). Waiting {wait:.0f}s...", file=sys.stderr)
                 time.sleep(wait)
-    raise RuntimeError(f"Gemini rate limit persisted after {max_retries} attempts") from last_error
+    raise RuntimeError(f"Gemini errors persisted after {max_retries} attempts") from last_error
 
 
 def run_triage(
