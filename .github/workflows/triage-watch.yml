@@ -23,7 +23,7 @@ jobs:
 
       - name: Check for new issues and triage them (shadow mode -- logs only, never posts)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python src/watch_new_issues.py --repo Textualize/textual --db data/triage.db
 
