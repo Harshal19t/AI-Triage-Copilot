@@ -191,9 +191,18 @@ def _extract_retry_seconds(error: genai_errors.ClientError, default: float = 65.
     return default
 
 
+def _is_daily_quota_exhausted(error: genai_errors.ClientError) -> bool:
+    """A per-day quota (resets in ~24h) is fundamentally different from a
+    per-minute one (resets in under a minute) -- retrying the former for a
+    few minutes is pure wasted time against something that can't resolve
+    today. Google's error details include the specific quotaId, e.g.
+    'GenerateRequestsPerDayPerProjectPerModel-FreeTier' vs '...PerMinute...'."""
+    return "PerDay" in str(error.details)
+
+
 def call_gemini_with_retry(client, model: str, prompt: str, max_retries: int = 5):
-    """The free tier is capped at 5 requests/minute -- expect to hit this on
-    any batch of more than a handful of issues, not just as a rare edge case."""
+    """The free tier has both a per-minute limit (worth retrying -- resets fast)
+    and a per-day limit (not worth retrying -- fails fast instead)."""
     last_error = None
     for attempt in range(1, max_retries + 1):
         try:
@@ -208,10 +217,15 @@ def call_gemini_with_retry(client, model: str, prompt: str, max_retries: int = 5
         except genai_errors.ClientError as e:
             if e.code != 429:
                 raise  # not a rate limit -- don't retry, surface it immediately
+            if _is_daily_quota_exhausted(e):
+                raise RuntimeError(
+                    "Gemini daily free-tier quota exhausted (resets on Google's ~24h schedule, "
+                    "not something retrying within this run can fix)."
+                ) from e
             last_error = e
             if attempt < max_retries:
                 wait = _extract_retry_seconds(e)
-                print(f"Gemini rate limit hit (attempt {attempt}/{max_retries}). Waiting {wait:.0f}s...", file=sys.stderr)
+                print(f"Gemini per-minute rate limit hit (attempt {attempt}/{max_retries}). Waiting {wait:.0f}s...", file=sys.stderr)
                 time.sleep(wait)
     raise RuntimeError(f"Gemini rate limit persisted after {max_retries} attempts") from last_error
 

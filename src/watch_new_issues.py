@@ -140,10 +140,25 @@ def main():
         title, body = node.get("title") or "", node.get("body") or ""
         print(f"\n=== Triaging new issue #{node['number']}: {title} ===")
 
-        decision, similar_issues, _ = agent.run_triage(
-            title, body, args.chroma_dir, args.collection, args.model, api_key,
-            exclude_number=node["number"],
-        )
+        try:
+            decision, similar_issues, _ = agent.run_triage(
+                title, body, args.chroma_dir, args.collection, args.model, api_key,
+                exclude_number=node["number"],
+            )
+        except RuntimeError as e:
+            print(f"Could not triage #{node['number']}: {e}", file=sys.stderr)
+            if "daily" in str(e).lower():
+                remaining = len(new_issues) - i - 1
+                print(
+                    f"Daily quota exhausted -- stopping here rather than failing on every "
+                    f"remaining issue one by one. {remaining} issue(s) left unprocessed this "
+                    f"run will be picked up automatically on a future poll, since they were "
+                    f"never added to triaged_log.",
+                    file=sys.stderr,
+                )
+                break
+            continue  # some other persistent failure specific to this one issue -- skip, keep going
+
         output = agent.format_decision(decision, similar_issues)
         print(output)
 
