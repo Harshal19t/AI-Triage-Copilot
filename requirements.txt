@@ -3,3 +3,5 @@ chromadb>=0.5
 python-dotenv>=1.0
 google-genai>=0.3
 pydantic>=2.0
+streamlit>=1.60
+pandas>=2.0
