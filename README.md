@@ -240,6 +240,8 @@ accident.
    `GITHUB_TOKEN` (which can't write to a repo this project doesn't have
    collaborator access to anyway)
 
+**[Live dashboard](https://ai-triage-copilot-dcrfstwsgdj4ijh9zc9e78.streamlit.app/)** — real issue volume trends and shadow-mode triage activity. Reflects the repo as of the last deploy/reboot, not live-updating every 30 minutes (Streamlit Community Cloud doesn't auto-refresh on repo changes).
+
 ## Cost
 
 $0, indefinitely, not just during a trial: GitHub API (free), GitHub
