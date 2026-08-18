@@ -21,6 +21,21 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      - name: Cache Chroma index (rebuilds only when triage.db actually changes)
+        uses: actions/cache@v4
+        with:
+          path: data/chroma
+          key: chroma-index-${{ hashFiles('data/triage.db') }}
+
+      - name: Build index if the cache didn't have it
+        run: |
+          if [ ! -d "data/chroma" ] || [ -z "$(ls -A data/chroma 2>/dev/null)" ]; then
+            echo "No cached index for this triage.db version -- building fresh."
+            python src/build_index.py
+          else
+            echo "Using cached index -- underlying data hasn't changed since last build."
+          fi
+
       - name: Check for new issues and triage them (shadow mode -- logs only, never posts)
         env:
           GITHUB_TOKEN: ${{ secrets.GHUB_TOKEN }}
