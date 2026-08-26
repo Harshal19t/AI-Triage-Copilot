@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write   # needed to commit the updated triaged_log table
 
+concurrency:
+  group: repo-data-write   # shared with nightly-ingest.yml -- queues instead of racing on data/triage.db
+  cancel-in-progress: false
+
 jobs:
   watch:
     runs-on: ubuntu-latest
@@ -38,14 +42,35 @@ jobs:
 
       - name: Check for new issues and triage them (shadow mode -- logs only, never posts)
         env:
-          GITHUB_TOKEN: ${{ secrets.GHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python src/watch_new_issues.py --repo Textualize/textual --db data/triage.db
 
       - name: Commit updated triage log
+        if: always()   # save whatever progress was made even if the previous step hit something unexpected
         run: |
           git config user.name "triage-bot"
           git config user.email "actions@github.com"
           git add data/triage.db
-          git diff --cached --quiet || git commit -m "chore: triage new issues (shadow mode)"
-          git push
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: triage new issues (shadow mode)"
+
+          for attempt in 1 2 3; do
+            if git push; then
+              echo "Pushed on attempt $attempt."
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt) -- fetching and rebasing..."
+            git fetch origin main
+            if ! git rebase origin/main; then
+              git rebase --abort
+              echo "::error::Rebase hit a real conflict (likely two workflows writing data/triage.db at once)."
+              echo "::error::Not auto-resolving a binary-file conflict -- resolve manually: git pull --rebase, fix, push."
+              exit 1
+            fi
+          done
+          echo "::error::Failed to push after 3 attempts."
+          exit 1

@@ -233,14 +233,14 @@ accident.
    server overload gracefully
 6. ~~Dashboard~~ — real volume trends and triage activity, honest about
    what it doesn't measure yet
-7. **Iterate on real feedback** ← here now — waiting on the
-   [maintainer outreach](https://github.com/Textualize/textual/discussions).
-   If/when approved: write `post_comment.py`, gate it behind an explicit
-   `POST_TO_GITHUB=true`, and use a token separate from the default
-   `GITHUB_TOKEN` (which can't write to a repo this project doesn't have
-   collaborator access to anyway)
-
-**[Live dashboard](https://ai-triage-copilot-dcrfstwsgdj4ijh9zc9e78.streamlit.app/)** — real issue volume trends and shadow-mode triage activity. Reflects the repo as of the last deploy/reboot, not live-updating every 30 minutes (Streamlit Community Cloud doesn't auto-refresh on repo changes).
+7. **Real feedback received** — the maintainer declined (a single 👎
+   reaction, [discussion](https://github.com/Textualize/textual/discussions/6700)
+   closed without further comment). Respected without pushback; the project
+   continues running in shadow mode as a demonstration rather than pursuing
+   live posting. This is a realistic outcome, not a failure of the
+   engineering — many OSS maintainers are broadly cautious about AI-driven
+   bot activity on their issue tracker right now, independent of a specific
+   tool's quality. `post_comment.py` remains unwritten by design.
 
 ## Cost
 

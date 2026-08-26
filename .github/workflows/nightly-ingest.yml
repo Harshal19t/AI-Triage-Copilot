@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write   # needed so the "Commit updated database" step can push -- default is read-only
 
+concurrency:
+  group: repo-data-write   # shared with triage-watch.yml -- queues instead of racing on data/triage.db
+  cancel-in-progress: false
+
 jobs:
   ingest:
     runs-on: ubuntu-latest
@@ -31,9 +35,30 @@ jobs:
         run: python src/ingest_docs.py --repo Textualize/textual --docs-path docs --db data/triage.db
 
       - name: Commit updated database
+        if: always()   # save whatever progress was made even if an earlier step (e.g. docs ingest) failed
         run: |
           git config user.name "triage-bot"
           git config user.email "actions@github.com"
           git add data/triage.db
-          git diff --cached --quiet || git commit -m "chore: nightly issue/doc ingest"
-          git push
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: nightly issue/doc ingest"
+
+          for attempt in 1 2 3; do
+            if git push; then
+              echo "Pushed on attempt $attempt."
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt) -- fetching and rebasing..."
+            git fetch origin main
+            if ! git rebase origin/main; then
+              git rebase --abort
+              echo "::error::Rebase hit a real conflict (likely two workflows writing data/triage.db at once)."
+              echo "::error::Not auto-resolving a binary-file conflict -- resolve manually: git pull --rebase, fix, push."
+              exit 1
+            fi
+          done
+          echo "::error::Failed to push after 3 attempts."
+          exit 1
